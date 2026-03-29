@@ -778,22 +778,60 @@ details[open] summary {
    ============================================ */
 .not-found {
   text-align: center;
-  padding: 6rem 0;
+  padding: 5rem 0 6rem;
+}
+
+.not-found-icon {
+  color: var(--border);
+  margin-bottom: 1.5rem;
+  animation: fadeUp var(--duration-slow) var(--ease-out) both;
+}
+
+.not-found-icon svg {
+  width: 80px;
+  height: 80px;
 }
 
 .not-found h1 {
-  font-size: 5rem;
+  font-size: 6rem;
   font-weight: 800;
   color: var(--green);
   letter-spacing: -0.04em;
   line-height: 1;
   margin-bottom: 0.75rem;
+  animation: fadeUp var(--duration-slow) var(--ease-out) 0.05s both;
 }
 
-.not-found p {
+.not-found-message {
+  color: var(--text-secondary);
+  margin-bottom: 2.5rem;
+  font-size: 1.15rem;
+  max-width: 400px;
+  margin-left: auto;
+  margin-right: auto;
+  line-height: 1.6;
+  animation: fadeUp var(--duration-slow) var(--ease-out) 0.1s both;
+}
+
+.not-found-suggestions {
+  animation: fadeUp var(--duration-slow) var(--ease-out) 0.15s both;
+}
+
+.not-found-hint {
   color: var(--text-muted);
-  margin-bottom: 2rem;
-  font-size: 1.05rem;
+  font-size: 0.85rem;
+  margin-bottom: 1rem;
+}
+
+.not-found-links {
+  display: flex;
+  gap: 0.5rem;
+  justify-content: center;
+  flex-wrap: wrap;
+}
+
+.not-found-links .btn {
+  margin: 0;
 }
 
 /* ============================================
@@ -867,8 +905,21 @@ code {
     padding: 2rem 0;
   }
 
+  .not-found {
+    padding: 3rem 0 4rem;
+  }
+
+  .not-found-icon svg {
+    width: 60px;
+    height: 60px;
+  }
+
   .not-found h1 {
-    font-size: 3.5rem;
+    font-size: 4rem;
+  }
+
+  .not-found-message {
+    font-size: 1rem;
   }
 
   h1 { font-size: 1.65rem; }

@@ -30,6 +30,25 @@ app.use(
   cache({ cacheName: 'iya-oloja', cacheControl: 'public, max-age=300' })
 );
 
+// API index
+app.get('/api', (c) => {
+  return c.json({
+    name: 'Iya Oloja',
+    description: 'An open directory and API for markets across Nigeria',
+    version: '1.0.0',
+    endpoints: {
+      states: '/api/states',
+      state: '/api/states/:slug',
+      lgas: '/api/lgas/:slug',
+      markets: '/api/markets?limit=20&offset=0&order=asc',
+      search: '/api/search?q=query',
+      contribute: 'POST /api/contribute',
+    },
+    docs: '/docs',
+    github: 'https://github.com/ifihan/nigerian-markets-api',
+  });
+});
+
 // API routes
 app.route('/api/search', searchApi);
 app.route('/api/states', statesApi);
