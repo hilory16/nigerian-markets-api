@@ -114,14 +114,14 @@ npm run dev
 
 ### Scripts
 
-| Command | Description |
-|---------|-------------|
-| `npm run dev` | Start local dev server |
-| `npm run build` | Build for production |
-| `npm run deploy` | Build and deploy to Cloudflare Pages |
-| `npm run seed` | Regenerate state JSON files (clears markets!) |
-| `npm run validate` | Validate all data files |
-| `npm run db:migrate` | Run D1 migrations locally |
+| Command              | Description                                   |
+| -------------------- | --------------------------------------------- |
+| `npm run dev`        | Start local dev server                        |
+| `npm run build`      | Build for production                          |
+| `npm run deploy`     | Build and deploy to Cloudflare Pages          |
+| `npm run seed`       | Regenerate state JSON files (clears markets!) |
+| `npm run validate`   | Validate all data files                       |
+| `npm run db:migrate` | Run D1 migrations locally                     |
 
 ### Docs App
 
