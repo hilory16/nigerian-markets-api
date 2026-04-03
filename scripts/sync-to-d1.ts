@@ -30,6 +30,28 @@ if (!API_TOKEN || !ACCOUNT_ID || !DATABASE_ID) {
 
 const BASE_URL = `https://api.cloudflare.com/client/v4/accounts/${ACCOUNT_ID}/d1/database/${DATABASE_ID}`;
 
+async function execSQL(sql: string, params: unknown[] = []) {
+  const res = await fetch(`${BASE_URL}/query`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${API_TOKEN}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ sql, params }),
+  });
+
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`D1 API error (${res.status}): ${text}`);
+  }
+
+  return res.json() as Promise<{
+    result?: Array<{
+      results?: Array<Record<string, unknown>>;
+    }>;
+  }>;
+}
+
 async function execBatch(statements: { sql: string; params?: unknown[] }[]) {
   const res = await fetch(`${BASE_URL}/query`, {
     method: 'POST',
@@ -72,28 +94,34 @@ async function runBatched(statements: { sql: string; params?: unknown[] }[], bat
 }
 
 /**
- * Escapes a string for safe use as a SQL string literal.
- * Slugs only contain [a-z0-9-] so this is mostly defensive.
- */
-function sqlLiteral(value: string): string {
-  return `'${value.replace(/'/g, "''")}'`;
-}
-
-/**
  * Deletes rows from `table` whose slugs are NOT in `validSlugs`.
- * Inlines slug values directly in the SQL to avoid D1's 100-param limit
- * and the SQLITE_AUTH restriction on temp tables via the HTTP API.
+ * Reads current slugs from D1, computes stale rows in-memory, then deletes
+ * only the stale slugs in small batches using parameterized IN clauses.
  */
 async function deleteStale(table: string, validSlugs: string[]) {
-  if (validSlugs.length === 0) {
-    await execBatchWithRetry([{ sql: `DELETE FROM ${table}` }]);
+  const current = await execSQL(`SELECT slug FROM ${table}`);
+  const rows = current.result?.[0]?.results ?? [];
+  const currentSlugs = rows
+    .map((row) => row.slug)
+    .filter((slug): slug is string => typeof slug === 'string');
+
+  const validSet = new Set(validSlugs);
+  const staleSlugs = currentSlugs.filter((slug) => !validSet.has(slug));
+
+  if (staleSlugs.length === 0) {
     return;
   }
 
-  const slugList = validSlugs.map(sqlLiteral).join(', ');
-  await execBatchWithRetry([
-    { sql: `DELETE FROM ${table} WHERE slug NOT IN (${slugList})` },
-  ]);
+  const deleteStmts: { sql: string; params?: unknown[] }[] = [];
+  for (let i = 0; i < staleSlugs.length; i += 50) {
+    const chunk = staleSlugs.slice(i, i + 50);
+    deleteStmts.push({
+      sql: `DELETE FROM ${table} WHERE slug IN (${chunk.map(() => '?').join(', ')})`,
+      params: chunk,
+    });
+  }
+
+  await runBatched(deleteStmts, 25);
 }
 
 async function main() {
@@ -177,7 +205,8 @@ async function main() {
   console.log(`  ${marketStmts.length} markets upserted`);
 
   // Delete stale rows (child-first to respect foreign keys)
-  // Each deleteStale call uses a temp table so it works for any number of slugs.
+  // Each deleteStale call fetches current slugs, diffs them in-memory, then
+  // deletes stale rows in small parameterized batches.
   console.log('Removing stale rows...');
   await deleteStale('markets', marketSlugs);
   await deleteStale('lgas', lgaSlugs);
