@@ -1,9 +1,14 @@
 /**
  * Syncs JSON data files to Cloudflare D1.
  *
- * This script reads all state JSON files from data/states/ and uses the
- * Cloudflare D1 HTTP API to rebuild the database. It runs in CI after
- * any changes to data/ are merged to main.
+ * Uses upserts (INSERT ... ON CONFLICT DO UPDATE) so only changed rows are
+ * written.  Stale rows whose slugs no longer appear in the JSON source are
+ * deleted at the end using temp tables, in child-first order to respect
+ * foreign keys.
+ *
+ * Each batch API call is atomic (D1 rolls back on failure), but the full
+ * sync spans multiple batches and is NOT globally atomic — a failure
+ * mid-sync can leave a mix of old and new data.
  *
  * Required env vars:
  *   CLOUDFLARE_API_TOKEN
@@ -26,14 +31,14 @@ if (!API_TOKEN || !ACCOUNT_ID || !DATABASE_ID) {
 
 const BASE_URL = `https://api.cloudflare.com/client/v4/accounts/${ACCOUNT_ID}/d1/database/${DATABASE_ID}`;
 
-async function execSQL(sql: string, params: unknown[] = []) {
+async function execBatch(statements: { sql: string; params?: unknown[] }[]) {
   const res = await fetch(`${BASE_URL}/query`, {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${API_TOKEN}`,
       'Content-Type': 'application/json',
     },
-    body: JSON.stringify({ sql, params }),
+    body: JSON.stringify({ batch: statements }),
   });
 
   if (!res.ok) {
@@ -44,10 +49,10 @@ async function execSQL(sql: string, params: unknown[] = []) {
   return res.json();
 }
 
-async function execSQLWithRetry(sql: string, params: unknown[] = [], retries = 3): Promise<unknown> {
+async function execBatchWithRetry(statements: { sql: string; params?: unknown[] }[], retries = 3): Promise<unknown> {
   for (let attempt = 1; attempt <= retries; attempt++) {
     try {
-      return await execSQL(sql, params);
+      return await execBatch(statements);
     } catch (err) {
       if (attempt === retries) throw err;
       await new Promise((r) => setTimeout(r, 1000 * attempt));
@@ -55,11 +60,46 @@ async function execSQLWithRetry(sql: string, params: unknown[] = [], retries = 3
   }
 }
 
-async function runConcurrent(statements: { sql: string; params?: unknown[] }[], concurrency: number) {
-  for (let i = 0; i < statements.length; i += concurrency) {
-    const chunk = statements.slice(i, i + concurrency);
-    await Promise.all(chunk.map((s) => execSQLWithRetry(s.sql, s.params ?? [])));
+/**
+ * Splits statements into chunks and sends each chunk as an atomic batch.
+ * D1 batches are transactional — if any statement in a batch fails, the
+ * entire batch is rolled back.
+ */
+async function runBatched(statements: { sql: string; params?: unknown[] }[], batchSize: number) {
+  for (let i = 0; i < statements.length; i += batchSize) {
+    const chunk = statements.slice(i, i + batchSize);
+    await execBatchWithRetry(chunk);
   }
+}
+
+/**
+ * Deletes rows from `table` whose slugs are NOT in `validSlugs`.
+ * Uses a temp table to hold valid slugs, then deletes via NOT IN,
+ * all in a single atomic batch. Handles any number of slugs without
+ * hitting SQLite parameter limits.
+ */
+async function deleteStale(table: string, validSlugs: string[]) {
+  const tmpTable = `_tmp_${table}_slugs`;
+  const stmts: { sql: string; params?: unknown[] }[] = [];
+
+  stmts.push({ sql: `CREATE TEMP TABLE IF NOT EXISTS ${tmpTable} (slug TEXT PRIMARY KEY)` });
+  stmts.push({ sql: `DELETE FROM ${tmpTable}` });
+
+  // Insert valid slugs into temp table in chunks to stay under param limits
+  for (let i = 0; i < validSlugs.length; i += 50) {
+    const chunk = validSlugs.slice(i, i + 50);
+    const values = chunk.map(() => '(?)').join(', ');
+    stmts.push({ sql: `INSERT INTO ${tmpTable} (slug) VALUES ${values}`, params: chunk });
+  }
+
+  // Delete rows not present in the temp table
+  stmts.push({
+    sql: `DELETE FROM ${table} WHERE slug NOT IN (SELECT slug FROM ${tmpTable})`,
+  });
+
+  stmts.push({ sql: `DROP TABLE IF EXISTS ${tmpTable}` });
+
+  await execBatchWithRetry(stmts);
 }
 
 async function main() {
@@ -70,45 +110,63 @@ async function main() {
     JSON.parse(readFileSync(join(dataDir, f), 'utf-8'))
   );
 
+  // Collect all expected slugs from JSON source
+  const stateSlugs: string[] = [];
+  const lgaSlugs: string[] = [];
+  const marketSlugs: string[] = [];
+
+  for (const state of allStates) {
+    stateSlugs.push(state.slug);
+    for (const lga of state.lgas) {
+      lgaSlugs.push(lga.slug);
+      for (const market of lga.markets) {
+        marketSlugs.push(market.slug);
+      }
+    }
+  }
+
   console.log(`Syncing ${allStates.length} states to D1...`);
 
-  // Step 1: Clear existing data (sequential, order matters for foreign keys)
-  console.log('Clearing existing data...');
-  await execSQL('DELETE FROM markets');
-  await execSQL('DELETE FROM lgas');
-  await execSQL('DELETE FROM states');
-
-  // Step 2: Insert states (can run concurrently, no dependencies between them)
-  console.log('Inserting states...');
+  // Upsert states
+  console.log('Upserting states...');
   const stateStmts = allStates.map((s) => ({
-    sql: 'INSERT INTO states (name, slug) VALUES (?, ?)',
+    sql: `INSERT INTO states (name, slug) VALUES (?, ?)
+          ON CONFLICT(slug) DO UPDATE SET name = excluded.name`,
     params: [s.name, s.slug],
   }));
-  await runConcurrent(stateStmts, 3);
-  console.log(`  ${stateStmts.length} states inserted`);
+  await runBatched(stateStmts, 50);
+  console.log(`  ${stateStmts.length} states upserted`);
 
-  // Step 3: Insert LGAs (depends on states being done, but LGAs can be concurrent)
-  console.log('Inserting LGAs...');
+  // Upsert LGAs
+  console.log('Upserting LGAs...');
   const lgaStmts: { sql: string; params: unknown[] }[] = [];
   for (const state of allStates) {
     for (const lga of state.lgas) {
       lgaStmts.push({
-        sql: 'INSERT INTO lgas (state_id, name, slug) VALUES ((SELECT id FROM states WHERE slug = ?), ?, ?)',
+        sql: `INSERT INTO lgas (state_id, name, slug) VALUES ((SELECT id FROM states WHERE slug = ?), ?, ?)
+              ON CONFLICT(slug) DO UPDATE SET name = excluded.name, state_id = excluded.state_id`,
         params: [state.slug, lga.name, lga.slug],
       });
     }
   }
-  await runConcurrent(lgaStmts, 3);
-  console.log(`  ${lgaStmts.length} LGAs inserted`);
+  await runBatched(lgaStmts, 50);
+  console.log(`  ${lgaStmts.length} LGAs upserted`);
 
-  // Step 4: Insert markets (depends on LGAs being done)
-  console.log('Inserting markets...');
+  // Upsert markets
+  console.log('Upserting markets...');
   const marketStmts: { sql: string; params: unknown[] }[] = [];
   for (const state of allStates) {
     for (const lga of state.lgas) {
       for (const market of lga.markets) {
         marketStmts.push({
-          sql: 'INSERT INTO markets (lga_id, name, slug, lat, lng, added_by) VALUES ((SELECT id FROM lgas WHERE slug = ?), ?, ?, ?, ?, ?)',
+          sql: `INSERT INTO markets (lga_id, name, slug, lat, lng, added_by)
+                VALUES ((SELECT id FROM lgas WHERE slug = ?), ?, ?, ?, ?, ?)
+                ON CONFLICT(slug) DO UPDATE SET
+                  name = excluded.name,
+                  lga_id = excluded.lga_id,
+                  lat = excluded.lat,
+                  lng = excluded.lng,
+                  added_by = excluded.added_by`,
           params: [
             lga.slug,
             market.name,
@@ -121,8 +179,16 @@ async function main() {
       }
     }
   }
-  await runConcurrent(marketStmts, 3);
-  console.log(`  ${marketStmts.length} markets inserted`);
+  await runBatched(marketStmts, 50);
+  console.log(`  ${marketStmts.length} markets upserted`);
+
+  // Delete stale rows (child-first to respect foreign keys)
+  // Each deleteStale call uses a temp table so it works for any number of slugs.
+  console.log('Removing stale rows...');
+  await deleteStale('markets', marketSlugs);
+  await deleteStale('lgas', lgaSlugs);
+  await deleteStale('states', stateSlugs);
+  console.log('Stale rows removed');
 
   console.log(`Done! Synced: ${allStates.length} states, ${lgaStmts.length} LGAs, ${marketStmts.length} markets`);
 }
