@@ -144,7 +144,7 @@
       "markets": [
         {
           "name": "Babajide Sanwo-Olu International Market",
-          "slug": "Babajide-Sanwo-Olu-International-Market",
+          "slug": "babajide-sanwo-olu-international-market",
           "coordinates": {
             "lat": 6.597185,
             "lng": 3.383451
@@ -153,7 +153,7 @@
         }
          {
           "name": "Oja Oba Market Ketu",
-          "slug": "Oja-Oba-Market-Ketu",
+          "slug": "oja-oba-market-ketu",
           "coordinates": {
             "lat": 6.598710,
             "lng": 3.387552
@@ -162,7 +162,7 @@
         },
         {
           "name": "Mile 12 International Market",
-          "slug": "Mile-12-International-Market",
+          "slug": "mile-12-international-market",
           "coordinates": {
             "lat": 6.608584,
             "lng": 3.393954
