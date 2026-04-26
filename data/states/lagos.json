@@ -12,6 +12,15 @@
       "slug": "lagos-ajeromi-ifelodun",
       "markets": [
         {
+          "name": "Boundary Market, Ajeromi-Ifelodun",
+          "slug": "boundary-market",
+          "coordinates": {
+            "lat": 6.45459,
+            "lng": 3.35176
+          },
+          "added_by": "ahmad-cod"
+        },
+        {
           "name": "Ibafon Market, Ajeromi-Ifelodun",
           "slug": "ibafon-market",
           "coordinates": {
